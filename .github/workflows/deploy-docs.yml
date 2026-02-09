@@ -24,8 +24,8 @@ jobs:
 
       - name: Fix Index Page (Redirect)
         run: |
-          # Creates a simple redirect so your-site.io/ becomes your-site.io/your_crate/
-          echo '<meta http-equiv="refresh" content="0;url=your_crate_name/index.html">' > target/doc/index.html
+          # Creates a simple redirect so your-site.io/ becomes your-site.io/mcp-plugin-api/
+          echo '<meta http-equiv="refresh" content="0;url=mcp-plugin-api/index.html">' > target/doc/index.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
