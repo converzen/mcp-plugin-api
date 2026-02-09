@@ -1,0 +1,44 @@
+name: Deploy Rust Docs
+
+on:
+  push:
+    branches: ["main"] # Only deploy when pushing to main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate Docs
+        run: cargo doc --no-deps
+
+      - name: Fix Index Page (Redirect)
+        run: |
+          # Creates a simple redirect so your-site.io/ becomes your-site.io/your_crate/
+          echo '<meta http-equiv="refresh" content="0;url=your_crate_name/index.html">' > target/doc/index.html
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
