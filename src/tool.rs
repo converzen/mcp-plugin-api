@@ -49,6 +49,7 @@ pub type ToolHandler = fn(&Value) -> Result<Value, String>;
 ///
 /// This represents a single tool with its metadata and handler function.
 pub struct Tool {
+    pub active: bool,
     pub name: String,
     pub description: String,
     pub params: Vec<ToolParam>,
@@ -65,8 +66,9 @@ impl Tool {
     ///     .param_i64("product_id", "The product ID", true)
     ///     .handler(handle_get_price)
     /// ```
-    pub fn builder(name: &str, description: &str) -> ToolBuilder {
+    pub fn builder(name: &str, description: &str, active: bool) -> ToolBuilder {
         ToolBuilder {
+            active,
             name: name.to_string(),
             description: description.to_string(),
             params: Vec::new(),
@@ -119,6 +121,7 @@ impl Tool {
 
 /// Builder for creating tools with a fluent API
 pub struct ToolBuilder {
+    active: bool,
     name: String,
     description: String,
     params: Vec<ToolParam>,
@@ -201,6 +204,7 @@ impl ToolBuilder {
     /// This consumes the builder and returns the completed Tool.
     pub fn handler(self, handler: ToolHandler) -> Tool {
         Tool {
+            active: self.active,
             name: self.name,
             description: self.description,
             params: self.params,

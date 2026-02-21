@@ -70,6 +70,7 @@ macro_rules! declare_tools {
             let tools = get_tools();
             let tools_json: ::std::vec::Vec<$crate::serde_json::Value> = tools
                 .values()
+                .filter(|t| t.active)
                 .map(|t| t.to_json_schema())
                 .collect();
             
@@ -115,17 +116,24 @@ macro_rules! declare_tools {
             let tools = get_tools();
             match tools.get(name) {
                 Some(tool) => {
-                    match (tool.handler)(&args) {
-                        Ok(result) => $crate::utils::return_success(
-                            result,
+                    if tool.active {
+                        match (tool.handler)(&args) {
+                            Ok(result) => $crate::utils::return_success(
+                                result,
+                                result_buf,
+                                result_len
+                            ),
+                            Err(e) => $crate::utils::return_error(
+                                &e,
+                                result_buf,
+                                result_len
+                            ),
+                        }
+                    } else {
+                        $crate::utils::return_error(
+                            &format!("Inactive tool: {}", name),
                             result_buf,
-                            result_len
-                        ),
-                        Err(e) => $crate::utils::return_error(
-                            &e,
-                            result_buf,
-                            result_len
-                        ),
+                            result_len)
                     }
                 }
                 None => $crate::utils::return_error(
