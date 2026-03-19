@@ -145,3 +145,127 @@ macro_rules! declare_tools {
         }
     };
 }
+
+/// Declare resources and auto-generate list_resources and read_resource functions
+///
+/// This macro takes a list of Resource definitions and generates:
+/// - A static resource registry (HashMap by URI)
+/// - The `generated_list_resources` function
+/// - The `generated_read_resource` function
+///
+/// These generated functions can be used in the `declare_plugin!` macro with
+/// `list_resources` and `read_resource`.
+///
+/// # Example
+///
+/// ```ignore
+/// use mcp_plugin_api::*;
+///
+/// fn read_readme(uri: &str) -> Result<ResourceContents, String> {
+///     Ok(vec![ResourceContent::text(
+///         uri,
+///         "# Hello",
+///         Some("text/markdown".to_string()),
+///     )])
+/// }
+///
+/// declare_resources! {
+///     resources: [
+///         Resource::builder("file:///docs/readme", read_readme)
+///             .name("readme.md")
+///             .description("Project documentation")
+///             .mime_type("text/markdown")
+///             .build(),
+///     ]
+/// }
+///
+/// declare_plugin! {
+///     list_tools: generated_list_tools,
+///     execute_tool: generated_execute_tool,
+///     free_string: mcp_plugin_api::utils::standard_free_string,
+///     list_resources: generated_list_resources,
+///     read_resource: generated_read_resource
+/// }
+/// ```
+#[macro_export]
+macro_rules! declare_resources {
+    (resources: [ $($resource:expr),* $(,)? ]) => {
+        static RESOURCES: ::std::sync::OnceLock<::std::collections::HashMap<::std::string::String, $crate::resource::Resource>>
+            = ::std::sync::OnceLock::new();
+
+        fn get_resources() -> &'static ::std::collections::HashMap<::std::string::String, $crate::resource::Resource> {
+            RESOURCES.get_or_init(|| {
+                let mut map = ::std::collections::HashMap::new();
+                $(
+                    let resource = $resource;
+                    map.insert(resource.uri.clone(), resource);
+                )*
+                map
+            })
+        }
+
+        /// Auto-generated list_resources function
+        ///
+        /// Returns JSON: `{ "resources": [...], "nextCursor": "..." }`
+        #[no_mangle]
+        pub unsafe extern "C" fn generated_list_resources(
+            result_buf: *mut *mut u8,
+            result_len: *mut usize,
+        ) -> i32 {
+            let resources = get_resources();
+            let resources_json: ::std::vec::Vec<$crate::serde_json::Value> = resources
+                .values()
+                .map(|r| r.to_list_item())
+                .collect();
+
+            let result = $crate::serde_json::json!({
+                "resources": resources_json
+            });
+            $crate::utils::return_success(result, result_buf, result_len)
+        }
+
+        /// Auto-generated read_resource function
+        ///
+        /// Dispatches to the appropriate resource handler based on the URI.
+        #[no_mangle]
+        pub unsafe extern "C" fn generated_read_resource(
+            uri_ptr: *const u8,
+            uri_len: usize,
+            result_buf: *mut *mut u8,
+            result_len: *mut usize,
+        ) -> i32 {
+            let uri_slice = ::std::slice::from_raw_parts(uri_ptr, uri_len);
+            let uri = match ::std::str::from_utf8(uri_slice) {
+                Ok(s) => s.to_string(),
+                Err(_) => return $crate::utils::return_error(
+                    "Invalid URI encoding",
+                    result_buf,
+                    result_len
+                ),
+            };
+
+            let resources = get_resources();
+            match resources.get(&uri) {
+                Some(resource) => {
+                    match (resource.handler)(&uri) {
+                        Ok(contents) => {
+                            let contents_json: ::std::vec::Vec<$crate::serde_json::Value> =
+                                contents.iter().map(|c| c.to_json()).collect();
+                            let result = $crate::serde_json::json!({
+                                "contents": contents_json
+                            });
+                            $crate::utils::return_success(result, result_buf, result_len)
+                        }
+                        Err(e) => $crate::utils::return_error(&e, result_buf, result_len),
+                    }
+                }
+                None => $crate::utils::return_error(
+                    &format!("Unknown resource: {}", uri),
+                    result_buf,
+                    result_len
+                ),
+            }
+        }
+    };
+}
+

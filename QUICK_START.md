@@ -29,62 +29,25 @@ serde_json = "1"
 
 ```rust
 use mcp_plugin_api::*;
-use std::ffi::CString;
-use serde_json::json;
+use serde_json::{json, Value};
 
-// Declare plugin with automatic version tracking
+fn handle_my_tool(args: &Value) -> Result<Value, String> {
+    let input = args["input"].as_str().unwrap_or("default");
+    Ok(json!({"output": format!("Processed: {}", input)}))
+}
+
+declare_tools! {
+    tools: [
+        Tool::builder("my_tool", "My awesome tool", true)
+            .param_string("input", "Input value", false)
+            .handler(handle_my_tool),
+    ]
+}
+
 declare_plugin! {
-    register: register_plugin,
-    free_string: plugin_free_string
-}
-
-// Register your tools
-extern "C" fn register_plugin(registrar: *mut PluginRegistrar) -> i32 {
-    let tool = ToolDeclaration {
-        name: CString::new("my_tool").unwrap().into_raw(),
-        description: CString::new("My awesome tool").unwrap().into_raw(),
-        parameters_json: CString::new(json!({
-            "type": "object",
-            "properties": {
-                "input": {"type": "string"}
-            }
-        }).to_string()).unwrap().into_raw(),
-        execute: execute_tool,
-        free_result: plugin_free_string,
-    };
-    
-    unsafe { ((*registrar).register_tool)(&tool) };
-    0
-}
-
-// Execute your tool
-unsafe extern "C" fn execute_tool(
-    args_json: *const u8,
-    args_len: usize,
-    result_buf: *mut *mut u8,
-    result_len: *mut usize,
-) -> i32 {
-    // Parse input
-    let args = std::slice::from_raw_parts(args_json, args_len);
-    let args_str = std::str::from_utf8(args).unwrap();
-    
-    // Do your work
-    let result = json!({"output": format!("Processed: {}", args_str)});
-    
-    // Return result
-    let result_vec = result.to_string().into_bytes();
-    *result_len = result_vec.capacity();
-    *result_buf = result_vec.as_ptr() as *mut u8;
-    std::mem::forget(result_vec);
-    
-    0  // Success
-}
-
-// Free memory
-unsafe extern "C" fn plugin_free_string(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len > 0 {
-        let _ = Vec::from_raw_parts(ptr, len, len);
-    }
+    list_tools: generated_list_tools,
+    execute_tool: generated_execute_tool,
+    free_string: mcp_plugin_api::utils::standard_free_string
 }
 ```
 
@@ -111,28 +74,55 @@ Run the server:
 
 ## Key Points
 
-✅ **Automatic Versioning**: The `declare_plugin!` macro embeds the API version  
-✅ **Thread-Safe**: Your execute function will be called concurrently  
-✅ **Memory Management**: Plugin allocates, framework frees via your function  
-✅ **Zero Dependencies**: Only needs `mcp-plugin-api`  
+- **Automatic Versioning**: The `declare_plugin!` macro embeds the API version
+- **Thread-Safe**: Your execute function will be called concurrently
+- **Memory Management**: Plugin allocates, framework frees via your function
+- **Zero Dependencies**: Only needs `mcp-plugin-api`
+
+## Adding Resources (Optional)
+
+Plugins can expose MCP resources in addition to tools:
+
+```rust
+use mcp_plugin_api::*;
+
+fn read_readme(uri: &str) -> Result<ResourceContents, String> {
+    Ok(vec![ResourceContent::text(
+        uri,
+        "# Hello\n\nPlugin documentation here.",
+        Some("text/markdown".to_string()),
+    )])
+}
+
+declare_resources! {
+    resources: [
+        Resource::builder("file:///my-plugin/readme", read_readme)
+            .name("readme.md")
+            .description("Plugin documentation")
+            .mime_type("text/markdown")
+            .build(),
+    ]
+}
+
+declare_plugin! {
+    list_tools: generated_list_tools,
+    execute_tool: generated_execute_tool,
+    free_string: mcp_plugin_api::utils::standard_free_string,
+    list_resources: generated_list_resources,
+    read_resource: generated_read_resource
+}
+```
 
 ## Common Patterns
 
-### Return Success
+### Return Success (from tool handler)
 ```rust
-let result = json!({"key": "value"});
-let mut vec = result.to_string().into_bytes();
-vec.shrink_to_fit();
-*result_len = vec.capacity();
-*result_buf = vec.as_ptr() as *mut u8;
-std::mem::forget(vec);
+Ok(json!({"key": "value"}))
 ```
 
-### Return Error
+### Return Error (from tool handler)
 ```rust
-let error = json!({"error": "Something went wrong"});
-// ... same as success
-return 1;  // Non-zero error code
+Err("Something went wrong".to_string())
 ```
 
 ### Thread-Safe State
@@ -144,21 +134,14 @@ static STATE: Lazy<Mutex<MyState>> = Lazy::new(|| {
     Mutex::new(MyState::new())
 });
 
-unsafe extern "C" fn execute_tool(...) -> i32 {
+fn handle_tool(args: &Value) -> Result<Value, String> {
     let state = STATE.lock().unwrap();
     // Use state safely
+    Ok(json!({"status": "ok"}))
 }
 ```
 
 ## Next Steps
 
 - See [PLUGIN_DEVELOPMENT.md](../../PLUGIN_DEVELOPMENT.md) for detailed guide
-- Check [pricing plugin](../../plugins/pricing/src/lib.rs) for complete example
 - Read [API documentation](README.md) for interface details
-
-## Need Help?
-
-- Check the example plugin: `plugins/pricing/`
-- Read the full development guide: `PLUGIN_DEVELOPMENT.md`
-- Review the architecture: `ARCHITECTURE.md`
-

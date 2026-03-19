@@ -63,6 +63,7 @@ pub use serde_json;
 pub use once_cell;
 
 // Export sub-modules
+pub mod resource;
 pub mod tool;
 pub mod utils;
 
@@ -71,6 +72,7 @@ pub mod utils;
 mod macros;
 
 // Re-export commonly used items
+pub use resource::{Resource, ResourceBuilder, ResourceContent, ResourceContents, ResourceHandler};
 pub use tool::{ParamType, Tool, ToolBuilder, ToolHandler, ToolParam};
 
 // ============================================================================
@@ -179,6 +181,39 @@ pub type GetConfigSchemaFn = unsafe extern "C" fn(
     schema_len: *mut usize,
 ) -> i32;
 
+/// Function signature for listing available MCP resources
+///
+/// Returns JSON: `{ "resources": [...], "nextCursor": "..." }`
+///
+/// # Parameters
+/// - `result_buf`: Output pointer for result (allocated by plugin)
+/// - `result_len`: Output capacity of result buffer
+///
+/// # Returns
+/// - 0 on success
+/// - Non-zero error code on failure
+pub type ListResourcesFn = unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32;
+
+/// Function signature for reading a resource by URI
+///
+/// Returns JSON: `{ "contents": [{ "uri", "mimeType?", "text?" | "blob?" }] }`
+///
+/// # Parameters
+/// - `uri_ptr`: Resource URI as byte array
+/// - `uri_len`: Length of URI
+/// - `result_buf`: Output pointer for result (allocated by plugin)
+/// - `result_len`: Output capacity of result buffer
+///
+/// # Returns
+/// - 0 on success
+/// - Non-zero error code on failure
+pub type ReadResourceFn = unsafe extern "C" fn(
+    *const u8,     // URI
+    usize,         // URI length
+    *mut *mut u8,  // result buffer (allocated by plugin)
+    *mut usize,    // result capacity
+) -> i32;
+
 // ============================================================================
 // Plugin Declaration
 // ============================================================================
@@ -225,6 +260,16 @@ pub struct PluginDeclaration {
     ///
     /// See [`GetConfigSchemaFn`] for details.
     pub get_config_schema: Option<GetConfigSchemaFn>,
+
+    /// Optional function to list available resources
+    ///
+    /// See [`ListResourcesFn`] for details.
+    pub list_resources: Option<ListResourcesFn>,
+
+    /// Optional function to read a resource by URI
+    ///
+    /// See [`ReadResourceFn`] for details.
+    pub read_resource: Option<ReadResourceFn>,
 }
 
 // Safety: The static is initialized with constant values and never modified
@@ -276,6 +321,8 @@ macro_rules! declare_plugin {
         $(, configure: $configure_fn:expr)?
         $(, init: $init_fn:expr)?
         $(, get_config_schema: $schema_fn:expr)?
+        $(, list_resources: $list_resources_fn:expr)?
+        $(, read_resource: $read_resource_fn:expr)?
     ) => {
         #[no_mangle]
         pub static plugin_declaration: $crate::PluginDeclaration = $crate::PluginDeclaration {
@@ -286,6 +333,8 @@ macro_rules! declare_plugin {
             configure: $crate::__declare_plugin_option!($($configure_fn)?),
             init: $crate::__declare_plugin_option!($($init_fn)?),
             get_config_schema: $crate::__declare_plugin_option!($($schema_fn)?),
+            list_resources: $crate::__declare_plugin_option!($($list_resources_fn)?),
+            read_resource: $crate::__declare_plugin_option!($($read_resource_fn)?),
         };
     };
 }

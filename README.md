@@ -4,7 +4,7 @@ The interface crate for building MCP (Model Context Protocol) server plugins.
 
 ## Overview
 
-This crate defines the C ABI interface between the MCP framework and plugins. It contains only type definitions and no implementation code, making it lightweight and stable.
+This crate defines the C ABI interface between the MCP framework and plugins. It supports both **Tools** and **Resources** capabilities. Plugins can expose tools (callable functions), resources (URI-addressable content), or both.
 
 ## Why a Separate Crate?
 
@@ -44,32 +44,36 @@ Then in your plugin:
 
 ```rust
 use mcp_plugin_api::*;
+use serde_json::{json, Value};
 
-// Declare plugin with automatic version management
+fn handle_hello(args: &Value) -> Result<Value, String> {
+    Ok(json!({ "message": "Hello!" }))
+}
+
+declare_tools! {
+    tools: [
+        Tool::builder("hello", "Say hello", true).handler(handle_hello),
+    ]
+}
+
 declare_plugin! {
-    register: register_plugin,
-    free_string: plugin_free_string
-}
-
-extern "C" fn register_plugin(registrar: *mut PluginRegistrar) -> i32 {
-    // Register your tools...
-    0
-}
-
-unsafe extern "C" fn plugin_free_string(ptr: *mut u8, len: usize) {
-    if !ptr.is_null() && len > 0 {
-        let _ = Vec::from_raw_parts(ptr, len, len);
-    }
+    list_tools: generated_list_tools,
+    execute_tool: generated_execute_tool,
+    free_string: mcp_plugin_api::utils::standard_free_string
 }
 ```
+
+Plugins can also expose MCP resources using `declare_resources!` and the optional
+`list_resources` and `read_resource` parameters in `declare_plugin!`.
 
 The `declare_plugin!` macro automatically embeds the API version from the crate you're building against, ensuring version tracking without manual management.
 
 ## Key Types
 
 - **`PluginDeclaration`**: Main plugin entry point
-- **`PluginRegistrar`**: Used to register tools during initialization
-- **`ToolDeclaration`**: Defines a tool's metadata and execution function
+- **`Tool`** / **`ToolBuilder`**: High-level tool definitions with `declare_tools!`
+- **`Resource`** / **`ResourceBuilder`**: MCP resources with `declare_resources!`
+- **`ResourceContent`**: Resource read response (text or binary)
 
 ## Memory Safety
 

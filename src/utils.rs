@@ -88,6 +88,29 @@ pub unsafe fn prepare_result(data: Value, result_buf: *mut *mut u8, result_len: 
     let _ = ManuallyDrop::new(vec);
 }
 
+/// Build MCP resources/list response JSON
+///
+/// Creates `{ "resources": [...], "nextCursor"?: "..." }` per MCP spec.
+pub fn resource_list_response(
+    resources: Vec<Value>,
+    next_cursor: Option<&str>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("resources".to_string(), Value::Array(resources));
+    if let Some(c) = next_cursor {
+        obj.insert("nextCursor".to_string(), serde_json::json!(c));
+    }
+    Value::Object(obj)
+}
+
+/// Build MCP resources/read response JSON
+///
+/// Creates `{ "contents": [...] }` per MCP spec.
+pub fn resource_read_response(contents: &[crate::resource::ResourceContent]) -> Value {
+    let items: Vec<Value> = contents.iter().map(|c| c.to_json()).collect();
+    serde_json::json!({ "contents": items })
+}
+
 /// Standard free_string implementation
 ///
 /// This can be used directly in the `declare_plugin!` macro.
@@ -375,6 +398,10 @@ pub fn resource_content(
         "content": [res]
     })
 }
+
+// ============================================================================
+// Content Helpers - MCP-compliant content construction (for tool results)
+// ============================================================================
 
 /// Helper to create a multi-content response
 ///
