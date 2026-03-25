@@ -45,9 +45,9 @@
 macro_rules! declare_tools {
     (tools: [ $($tool:expr),* $(,)? ]) => {
         // Generate a static HashMap of tools using OnceLock for thread-safe lazy init
-        static TOOLS: ::std::sync::OnceLock<::std::collections::HashMap<::std::string::String, $crate::tool::Tool>> 
+        static TOOLS: ::std::sync::OnceLock<::std::collections::HashMap<::std::string::String, $crate::tool::Tool>>
             = ::std::sync::OnceLock::new();
-        
+
         fn get_tools() -> &'static ::std::collections::HashMap<::std::string::String, $crate::tool::Tool> {
             TOOLS.get_or_init(|| {
                 let mut map = ::std::collections::HashMap::new();
@@ -58,7 +58,7 @@ macro_rules! declare_tools {
                 map
             })
         }
-        
+
         /// Auto-generated list_tools function
         ///
         /// Returns a JSON array of all tool definitions.
@@ -73,11 +73,11 @@ macro_rules! declare_tools {
                 .filter(|t| t.active)
                 .map(|t| t.to_json_schema())
                 .collect();
-            
+
             let json_array = $crate::serde_json::Value::Array(tools_json);
             $crate::utils::return_success(json_array, result_buf, result_len)
         }
-        
+
         /// Auto-generated execute_tool function
         ///
         /// Dispatches to the appropriate tool handler based on the tool name.
@@ -90,7 +90,7 @@ macro_rules! declare_tools {
             result_len: *mut usize,
         ) -> i32 {
             use ::std::ffi::CStr;
-            
+
             // Parse tool name
             let name = match CStr::from_ptr(tool_name).to_str() {
                 Ok(s) => s,
@@ -100,7 +100,7 @@ macro_rules! declare_tools {
                     result_len
                 ),
             };
-            
+
             // Parse arguments
             let args_slice = ::std::slice::from_raw_parts(args_json, args_len);
             let args: $crate::serde_json::Value = match $crate::serde_json::from_slice(args_slice) {
@@ -111,7 +111,7 @@ macro_rules! declare_tools {
                     result_len
                 ),
             };
-            
+
             // Find and execute the tool (O(1) HashMap lookup!)
             let tools = get_tools();
             match tools.get(name) {
@@ -218,10 +218,8 @@ macro_rules! declare_resources {
                 .map(|r| r.to_list_item())
                 .collect();
 
-            let result = $crate::serde_json::json!({
-                "resources": resources_json
-            });
-            $crate::utils::return_success(result, result_buf, result_len)
+            let json_array = $crate::serde_json::Value::Array(resources_json);
+            $crate::utils::return_success(json_array, result_buf, result_len)
         }
 
         /// Auto-generated read_resource function
@@ -268,4 +266,3 @@ macro_rules! declare_resources {
         }
     };
 }
-
