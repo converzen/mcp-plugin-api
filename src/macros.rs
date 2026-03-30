@@ -44,8 +44,9 @@
 #[macro_export]
 macro_rules! declare_tools {
     (tools: [ $($tool:expr),* $(,)? ]) => {
-        // Generate a static HashMap of tools using OnceLock for thread-safe lazy init
         static TOOLS: ::std::sync::OnceLock<::std::collections::HashMap<::std::string::String, $crate::tool::Tool>>
+            = ::std::sync::OnceLock::new();
+        static TOOLS_LIST_CACHE: ::std::sync::OnceLock<::std::vec::Vec<u8>>
             = ::std::sync::OnceLock::new();
 
         fn get_tools() -> &'static ::std::collections::HashMap<::std::string::String, $crate::tool::Tool> {
@@ -59,28 +60,29 @@ macro_rules! declare_tools {
             })
         }
 
-        /// Auto-generated list_tools function
-        ///
-        /// Returns a JSON array of all tool definitions.
+        fn get_tools_list_cache() -> &'static [u8] {
+            TOOLS_LIST_CACHE.get_or_init(|| {
+                let tools = get_tools();
+                let tools_json: ::std::vec::Vec<$crate::serde_json::Value> = tools
+                    .values()
+                    .filter(|t| t.active)
+                    .map(|t| t.to_json_schema())
+                    .collect();
+                let json_array = $crate::serde_json::Value::Array(tools_json);
+                json_array.to_string().into_bytes()
+            })
+        }
+
+        /// Auto-generated list_tools — returns pre-serialized JSON (one memcpy).
         #[no_mangle]
         pub unsafe extern "C" fn generated_list_tools(
             result_buf: *mut *mut u8,
             result_len: *mut usize,
         ) -> i32 {
-            let tools = get_tools();
-            let tools_json: ::std::vec::Vec<$crate::serde_json::Value> = tools
-                .values()
-                .filter(|t| t.active)
-                .map(|t| t.to_json_schema())
-                .collect();
-
-            let json_array = $crate::serde_json::Value::Array(tools_json);
-            $crate::utils::return_success(json_array, result_buf, result_len)
+            $crate::utils::return_prebuilt(get_tools_list_cache(), result_buf, result_len)
         }
 
-        /// Auto-generated execute_tool function
-        ///
-        /// Dispatches to the appropriate tool handler based on the tool name.
+        /// Auto-generated execute_tool — O(1) HashMap lookup then handler dispatch.
         #[no_mangle]
         pub unsafe extern "C" fn generated_execute_tool(
             tool_name: *const ::std::os::raw::c_char,
@@ -91,7 +93,6 @@ macro_rules! declare_tools {
         ) -> i32 {
             use ::std::ffi::CStr;
 
-            // Parse tool name
             let name = match CStr::from_ptr(tool_name).to_str() {
                 Ok(s) => s,
                 Err(_) => return $crate::utils::return_error(
@@ -101,7 +102,6 @@ macro_rules! declare_tools {
                 ),
             };
 
-            // Parse arguments
             let args_slice = ::std::slice::from_raw_parts(args_json, args_len);
             let args: $crate::serde_json::Value = match $crate::serde_json::from_slice(args_slice) {
                 Ok(v) => v,
@@ -112,7 +112,6 @@ macro_rules! declare_tools {
                 ),
             };
 
-            // Find and execute the tool (O(1) HashMap lookup!)
             let tools = get_tools();
             match tools.get(name) {
                 Some(tool) => {
@@ -146,51 +145,84 @@ macro_rules! declare_tools {
     };
 }
 
-/// Declare resources and auto-generate list_resources and read_resource functions
+/// Declare resources and auto-generate list_resources, list_resource_templates, and read_resource
 ///
-/// This macro takes a list of Resource definitions and generates:
-/// - A static resource registry (HashMap by URI)
-/// - The `generated_list_resources` function
-/// - The `generated_read_resource` function
+/// Dispatches `read_resource` in order: exact static URI, first matching URI template
+/// (`{var}` placeholders), then optional `read_fallback`.
 ///
-/// These generated functions can be used in the `declare_plugin!` macro with
-/// `list_resources` and `read_resource`.
-///
-/// # Example
+/// # Example (static resources only)
 ///
 /// ```ignore
-/// use mcp_plugin_api::*;
-///
-/// fn read_readme(uri: &str) -> Result<ResourceContents, String> {
-///     Ok(vec![ResourceContent::text(
-///         uri,
-///         "# Hello",
-///         Some("text/markdown".to_string()),
-///     )])
-/// }
-///
 /// declare_resources! {
 ///     resources: [
 ///         Resource::builder("file:///docs/readme", read_readme)
 ///             .name("readme.md")
-///             .description("Project documentation")
-///             .mime_type("text/markdown")
 ///             .build(),
 ///     ]
 /// }
+/// ```
 ///
-/// declare_plugin! {
-///     list_tools: generated_list_tools,
-///     execute_tool: generated_execute_tool,
-///     free_string: mcp_plugin_api::utils::standard_free_string,
-///     list_resources: generated_list_resources,
-///     read_resource: generated_read_resource
+/// # Example (templates + fallback)
+///
+/// ```ignore
+/// fn read_file(uri: &str, vars: &HashMap<String, String>) -> Result<ResourceContents, String> {
+///     let path = vars.get("path").ok_or("missing path")?;
+///     Ok(vec![ResourceContent::text(uri, contents, Some("text/plain".into()))])
+/// }
+///
+/// fn read_any(uri: &str) -> Result<ResourceContents, String> {
+///     Err("not found".into())
+/// }
+///
+/// declare_resources! {
+///     resources: [],
+///     templates: [
+///         ResourceTemplate::builder("file:///project/{path}", read_file)
+///             .name("project-files")
+///             .build(),
+///     ],
+///     read_fallback: read_any
 /// }
 /// ```
 #[macro_export]
 macro_rules! declare_resources {
     (resources: [ $($resource:expr),* $(,)? ]) => {
+        $crate::declare_resources!(@impl
+            resources: [$($resource),*],
+            templates: [],
+            read_fallback: []
+        );
+    };
+    (
+        resources: [ $($resource:expr),* $(,)? ],
+        templates: [ $($template:expr),* $(,)? ]
+    ) => {
+        $crate::declare_resources!(@impl
+            resources: [$($resource),*],
+            templates: [$($template),*],
+            read_fallback: []
+        );
+    };
+    (
+        resources: [ $($resource:expr),* $(,)? ],
+        templates: [ $($template:expr),* $(,)? ],
+        read_fallback: $fallback:expr
+    ) => {
+        $crate::declare_resources!(@impl
+            resources: [$($resource),*],
+            templates: [$($template),*],
+            read_fallback: [$fallback]
+        );
+    };
+
+    (@impl resources: [$($resource:expr),*], templates: [$($template:expr),*], read_fallback: [$($fallback:tt)*]) => {
         static RESOURCES: ::std::sync::OnceLock<::std::collections::HashMap<::std::string::String, $crate::resource::Resource>>
+            = ::std::sync::OnceLock::new();
+        static COMPILED_TEMPLATE_MATCHERS: ::std::sync::OnceLock<::std::vec::Vec<$crate::resource::CompiledTemplateMatcher>>
+            = ::std::sync::OnceLock::new();
+        static RESOURCES_LIST_CACHE: ::std::sync::OnceLock<::std::vec::Vec<u8>>
+            = ::std::sync::OnceLock::new();
+        static TEMPLATES_LIST_CACHE: ::std::sync::OnceLock<::std::vec::Vec<u8>>
             = ::std::sync::OnceLock::new();
 
         fn get_resources() -> &'static ::std::collections::HashMap<::std::string::String, $crate::resource::Resource> {
@@ -204,27 +236,71 @@ macro_rules! declare_resources {
             })
         }
 
-        /// Auto-generated list_resources function
-        ///
-        /// Returns JSON: `{ "resources": [...], "nextCursor": "..." }`
+        fn get_template_matchers() -> &'static ::std::vec::Vec<$crate::resource::CompiledTemplateMatcher> {
+            COMPILED_TEMPLATE_MATCHERS.get_or_init(|| {
+                vec![$($template),*]
+                    .into_iter()
+                    .map(|t| $crate::resource::CompiledTemplateMatcher::new(t)
+                        .expect("invalid URI template in declare_resources!"))
+                    .collect()
+            })
+        }
+
+        fn get_resources_list_cache() -> &'static [u8] {
+            RESOURCES_LIST_CACHE.get_or_init(|| {
+                let resources = get_resources();
+                let items: ::std::vec::Vec<$crate::serde_json::Value> = resources
+                    .values()
+                    .map(|r| r.to_list_item())
+                    .collect();
+                $crate::utils::resource_list_response(items, None)
+                    .to_string().into_bytes()
+            })
+        }
+
+        fn get_templates_list_cache() -> &'static [u8] {
+            TEMPLATES_LIST_CACHE.get_or_init(|| {
+                let matchers = get_template_matchers();
+                let items: ::std::vec::Vec<$crate::serde_json::Value> = matchers
+                    .iter()
+                    .map(|m| m.template.to_template_list_item())
+                    .collect();
+                $crate::utils::resource_template_list_response(items, None)
+                    .to_string().into_bytes()
+            })
+        }
+
+        fn read_fallback_handler() -> ::std::option::Option<$crate::resource::GenericResourceReadHandler> {
+            $crate::__declare_plugin_option!($($fallback)*)
+        }
+
+        $crate::declare_resources!(@generated_functions);
+    };
+
+    (@generated_functions) => {
+        /// Auto-generated list_resources — returns pre-serialized JSON (one memcpy).
         #[no_mangle]
         pub unsafe extern "C" fn generated_list_resources(
             result_buf: *mut *mut u8,
             result_len: *mut usize,
         ) -> i32 {
-            let resources = get_resources();
-            let resources_json: ::std::vec::Vec<$crate::serde_json::Value> = resources
-                .values()
-                .map(|r| r.to_list_item())
-                .collect();
+            $crate::utils::return_prebuilt(get_resources_list_cache(), result_buf, result_len)
+        }
 
-            let json_array = $crate::serde_json::Value::Array(resources_json);
-            $crate::utils::return_success(json_array, result_buf, result_len)
+        /// Auto-generated list_resource_templates — returns pre-serialized JSON (one memcpy).
+        #[no_mangle]
+        pub unsafe extern "C" fn generated_list_resource_templates(
+            result_buf: *mut *mut u8,
+            result_len: *mut usize,
+        ) -> i32 {
+            $crate::utils::return_prebuilt(get_templates_list_cache(), result_buf, result_len)
         }
 
         /// Auto-generated read_resource function
         ///
-        /// Dispatches to the appropriate resource handler based on the URI.
+        /// Dispatches: exact static URI, then pre-compiled URI template matchers,
+        /// then optional read_fallback. Template regexes are compiled once (via
+        /// `OnceLock`) on the first call, not per request.
         #[no_mangle]
         pub unsafe extern "C" fn generated_read_resource(
             uri_ptr: *const u8,
@@ -234,7 +310,7 @@ macro_rules! declare_resources {
         ) -> i32 {
             let uri_slice = ::std::slice::from_raw_parts(uri_ptr, uri_len);
             let uri = match ::std::str::from_utf8(uri_slice) {
-                Ok(s) => s.to_string(),
+                Ok(s) => s,
                 Err(_) => return $crate::utils::return_error(
                     "Invalid URI encoding",
                     result_buf,
@@ -243,26 +319,43 @@ macro_rules! declare_resources {
             };
 
             let resources = get_resources();
-            match resources.get(&uri) {
-                Some(resource) => {
-                    match (resource.handler)(&uri) {
+            if let Some(resource) = resources.get(uri) {
+                return match (resource.handler)(uri) {
+                    Ok(contents) => {
+                        let response = $crate::utils::resource_read_response(&contents);
+                        $crate::utils::return_success(response, result_buf, result_len)
+                    }
+                    Err(e) => $crate::utils::return_error(&e, result_buf, result_len),
+                };
+            }
+
+            for matcher in get_template_matchers() {
+                if let Some(vars) = matcher.match_uri(uri) {
+                    return match (matcher.template.handler)(uri, &vars) {
                         Ok(contents) => {
-                            let contents_json: ::std::vec::Vec<$crate::serde_json::Value> =
-                                contents.iter().map(|c| c.to_json()).collect();
-                            let result = $crate::serde_json::json!({
-                                "contents": contents_json
-                            });
-                            $crate::utils::return_success(result, result_buf, result_len)
+                            let response = $crate::utils::resource_read_response(&contents);
+                            $crate::utils::return_success(response, result_buf, result_len)
                         }
                         Err(e) => $crate::utils::return_error(&e, result_buf, result_len),
-                    }
+                    };
                 }
-                None => $crate::utils::return_error(
-                    &format!("Unknown resource: {}", uri),
-                    result_buf,
-                    result_len
-                ),
             }
+
+            if let Some(fallback) = read_fallback_handler() {
+                return match fallback(uri) {
+                    Ok(contents) => {
+                        let response = $crate::utils::resource_read_response(&contents);
+                        $crate::utils::return_success(response, result_buf, result_len)
+                    }
+                    Err(e) => $crate::utils::return_error(&e, result_buf, result_len),
+                };
+            }
+
+            $crate::utils::return_error(
+                &format!("Unknown resource: {}", uri),
+                result_buf,
+                result_len
+            )
         }
     };
 }

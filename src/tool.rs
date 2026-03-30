@@ -48,6 +48,7 @@ pub type ToolHandler = fn(&Value) -> Result<Value, String>;
 /// A tool definition
 ///
 /// This represents a single tool with its metadata and handler function.
+#[derive(Debug, Clone)]
 pub struct Tool {
     pub active: bool,
     pub name: String,

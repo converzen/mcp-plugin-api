@@ -63,8 +63,7 @@ declare_plugin! {
 }
 ```
 
-Plugins can also expose MCP resources using `declare_resources!` and the optional
-`list_resources` and `read_resource` parameters in `declare_plugin!`.
+Plugins can expose **static resources** (`resources/list`, `resources/read` for fixed URIs), **resource templates** (`resources/templates/list` with `{variable}` placeholders in URIs), and a **read fallback** for custom routing. Wire optional ABI slots in `declare_plugin!`: `list_resources`, `list_resource_templates`, `read_resource`.
 
 The `declare_plugin!` macro automatically embeds the API version from the crate you're building against, ensuring version tracking without manual management.
 
@@ -72,8 +71,11 @@ The `declare_plugin!` macro automatically embeds the API version from the crate 
 
 - **`PluginDeclaration`**: Main plugin entry point
 - **`Tool`** / **`ToolBuilder`**: High-level tool definitions with `declare_tools!`
-- **`Resource`** / **`ResourceBuilder`**: MCP resources with `declare_resources!`
-- **`ResourceContent`**: Resource read response (text or binary)
+- **`Resource`** / **`ResourceBuilder`**: Fixed-URI resources for `declare_resources!`
+- **`ResourceTemplate`** / **`ResourceTemplateBuilder`**: URI templates (`file:///x/{path}`) for `resources/templates/list`
+- **`TemplateResourceHandler`**, **`GenericResourceReadHandler`**: Template and fallback read handlers
+- **`ResourceContent`**: `resources/read` body items (text or binary)
+- **`ListResourceTemplatesFn`**: C ABI for `resources/templates/list` JSON
 
 ## Memory Safety
 

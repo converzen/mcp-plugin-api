@@ -59,9 +59,6 @@ use std::os::raw::c_char;
 // Re-export serde_json for use in macros
 pub use serde_json;
 
-// Re-export once_cell for configuration
-pub use once_cell;
-
 // Export sub-modules
 pub mod resource;
 pub mod tool;
@@ -72,7 +69,11 @@ pub mod utils;
 mod macros;
 
 // Re-export commonly used items
-pub use resource::{Resource, ResourceBuilder, ResourceContent, ResourceContents, ResourceHandler};
+pub use resource::{
+    CompiledTemplateMatcher, GenericResourceReadHandler, Resource, ResourceBuilder,
+    ResourceContent, ResourceContents, ResourceHandler, ResourceTemplate,
+    ResourceTemplateBuilder, TemplateResourceHandler, match_uri_against_template,
+};
 pub use tool::{ParamType, Tool, ToolBuilder, ToolHandler, ToolParam};
 
 // ============================================================================
@@ -214,6 +215,19 @@ pub type ReadResourceFn = unsafe extern "C" fn(
     *mut usize,    // result capacity
 ) -> i32;
 
+/// Function signature for listing MCP resource templates (`resources/templates/list`)
+///
+/// Returns JSON: `{ "resourceTemplates": [...], "nextCursor"?: "..." }`
+///
+/// # Parameters
+/// - `result_buf`: Output pointer for result (allocated by plugin)
+/// - `result_len`: Output capacity of result buffer
+///
+/// # Returns
+/// - 0 on success
+/// - Non-zero error code on failure
+pub type ListResourceTemplatesFn = unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32;
+
 // ============================================================================
 // Plugin Declaration
 // ============================================================================
@@ -270,6 +284,11 @@ pub struct PluginDeclaration {
     ///
     /// See [`ReadResourceFn`] for details.
     pub read_resource: Option<ReadResourceFn>,
+
+    /// Optional function to list resource URI templates
+    ///
+    /// See [`ListResourceTemplatesFn`] for details.
+    pub list_resource_templates: Option<ListResourceTemplatesFn>,
 }
 
 // Safety: The static is initialized with constant values and never modified
@@ -323,6 +342,7 @@ macro_rules! declare_plugin {
         $(, get_config_schema: $schema_fn:expr)?
         $(, list_resources: $list_resources_fn:expr)?
         $(, read_resource: $read_resource_fn:expr)?
+        $(, list_resource_templates: $list_resource_templates_fn:expr)?
     ) => {
         #[no_mangle]
         pub static plugin_declaration: $crate::PluginDeclaration = $crate::PluginDeclaration {
@@ -335,6 +355,7 @@ macro_rules! declare_plugin {
             get_config_schema: $crate::__declare_plugin_option!($($schema_fn)?),
             list_resources: $crate::__declare_plugin_option!($($list_resources_fn)?),
             read_resource: $crate::__declare_plugin_option!($($read_resource_fn)?),
+            list_resource_templates: $crate::__declare_plugin_option!($($list_resource_templates_fn)?),
         };
     };
 }
@@ -543,9 +564,8 @@ macro_rules! declare_config_schema {
 #[macro_export]
 macro_rules! declare_plugin_config {
     ($config_type:ty) => {
-        // Generate static storage
-        static __PLUGIN_CONFIG: $crate::once_cell::sync::OnceCell<$config_type> =
-            $crate::once_cell::sync::OnceCell::new();
+        static __PLUGIN_CONFIG: ::std::sync::OnceLock<$config_type> =
+            ::std::sync::OnceLock::new();
 
         /// Get plugin configuration
         ///

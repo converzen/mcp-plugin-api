@@ -2,25 +2,21 @@
 //!
 //! This module provides safe wrappers around the unsafe FFI memory management
 //! operations required by the plugin API.
+//!
+//! All returned buffers use `into_boxed_slice()` to guarantee `len == capacity`,
+//! so `standard_free_string(ptr, len)` can safely reconstruct and drop a `Vec`.
 
 use serde_json::Value;
-use std::mem::ManuallyDrop;
 
 /// Return a success result to the framework
 ///
-/// This handles all the unsafe memory management details:
-/// - Converts the value to JSON
-/// - Allocates a buffer
-/// - Shrinks to minimize memory usage
-/// - Returns the pointer and capacity to the framework
+/// Serializes `data` to JSON, allocates a buffer with `len == capacity`, and
+/// writes the pointer and length to the output parameters.
 ///
 /// # Safety
 ///
-/// The caller must ensure that:
-/// - `result_buf` points to valid, properly aligned memory for writing a pointer
-/// - `result_len` points to valid, properly aligned memory for writing a usize
-/// - These pointers remain valid for the duration of the call
-/// - The pointers are not aliased (no other mutable references exist)
+/// `result_buf` and `result_len` must point to valid, properly aligned,
+/// non-aliased memory that remains valid for the duration of the call.
 ///
 /// # Example
 ///
@@ -32,22 +28,16 @@ use std::mem::ManuallyDrop;
 /// ```
 pub unsafe fn return_success(data: Value, result_buf: *mut *mut u8, result_len: *mut usize) -> i32 {
     prepare_result(data, result_buf, result_len);
-
-    0 // Success code
+    0
 }
 
 /// Return an error result to the framework
 ///
-/// This wraps the error message in a JSON object and returns it
-/// with an error code.
+/// Wraps the error message in `{ "error": "..." }` and returns error code 1.
 ///
 /// # Safety
 ///
-/// The caller must ensure that:
-/// - `result_buf` points to valid, properly aligned memory for writing a pointer
-/// - `result_len` points to valid, properly aligned memory for writing a usize
-/// - These pointers remain valid for the duration of the call
-/// - The pointers are not aliased (no other mutable references exist)
+/// Same requirements as [`return_success`].
 ///
 /// # Example
 ///
@@ -57,35 +47,41 @@ pub unsafe fn return_success(data: Value, result_buf: *mut *mut u8, result_len: 
 /// }
 /// ```
 pub unsafe fn return_error(error: &str, result_buf: *mut *mut u8, result_len: *mut usize) -> i32 {
-    let error_json = serde_json::json!({
-        "error": error
-    });
-
+    let error_json = serde_json::json!({ "error": error });
     prepare_result(error_json, result_buf, result_len);
-
-    1 // Error code
+    1
 }
 
-/// Prepare a result for return to the framework
+/// Serialize a `Value` and hand the buffer to the framework.
 ///
-/// Internal helper function that handles the common memory management
-/// for both success and error results.
+/// Uses `into_boxed_slice()` so `len == capacity` is guaranteed — no reliance
+/// on `shrink_to_fit` (which is only a hint).
 ///
 /// # Safety
 ///
-/// The caller must ensure that:
-/// - `result_buf` points to valid, properly aligned memory for writing a pointer
-/// - `result_len` points to valid, properly aligned memory for writing a usize
-/// - These pointers remain valid for the duration of the call
-/// - The pointers are not aliased (no other mutable references exist)
+/// Same requirements as [`return_success`].
 pub unsafe fn prepare_result(data: Value, result_buf: *mut *mut u8, result_len: *mut usize) {
-    let json_string = data.to_string();
-    let mut vec = json_string.into_bytes();
-    vec.shrink_to_fit();
+    let boxed = data.to_string().into_bytes().into_boxed_slice();
+    let len = boxed.len();
+    *result_buf = Box::into_raw(boxed) as *mut u8;
+    *result_len = len;
+}
 
-    *result_len = vec.capacity();
-    *result_buf = vec.as_mut_ptr();
-    let _ = ManuallyDrop::new(vec);
+/// Copy pre-serialized bytes into a fresh allocation and hand it to the framework.
+///
+/// Used by `generated_list_*` functions that cache their JSON response in a
+/// `OnceLock<Vec<u8>>`. Each call does one `memcpy` instead of rebuilding the
+/// `Value` tree and re-serializing.
+///
+/// # Safety
+///
+/// Same requirements as [`return_success`].
+pub unsafe fn return_prebuilt(bytes: &[u8], result_buf: *mut *mut u8, result_len: *mut usize) -> i32 {
+    let boxed = bytes.to_vec().into_boxed_slice();
+    let len = boxed.len();
+    *result_buf = Box::into_raw(boxed) as *mut u8;
+    *result_len = len;
+    0
 }
 
 /// Build MCP resources/list response JSON
@@ -111,16 +107,35 @@ pub fn resource_read_response(contents: &[crate::resource::ResourceContent]) -> 
     serde_json::json!({ "contents": items })
 }
 
+/// Build MCP resources/templates/list response JSON
+///
+/// Creates `{ "resourceTemplates": [...], "nextCursor"?: "..." }` per MCP spec.
+pub fn resource_template_list_response(
+    resource_templates: Vec<Value>,
+    next_cursor: Option<&str>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "resourceTemplates".to_string(),
+        Value::Array(resource_templates),
+    );
+    if let Some(c) = next_cursor {
+        obj.insert("nextCursor".to_string(), serde_json::json!(c));
+    }
+    Value::Object(obj)
+}
+
 /// Standard free_string implementation
 ///
-/// This can be used directly in the `declare_plugin!` macro.
-/// It safely deallocates memory that was allocated by the plugin
-/// and passed to the framework.
+/// Safely deallocates a buffer previously returned by [`return_success`],
+/// [`return_error`], or [`return_prebuilt`]. All of these guarantee
+/// `len == capacity` (via `into_boxed_slice()`), so the second parameter
+/// serves as both.
 ///
 /// # Safety
 ///
-/// The pointer and capacity must match the values returned by
-/// `return_success` or `return_error`.
+/// `ptr` and `len` must exactly match values previously written to
+/// `result_buf` / `result_len` by this crate's return helpers.
 ///
 /// # Example
 ///
@@ -131,11 +146,9 @@ pub fn resource_read_response(contents: &[crate::resource::ResourceContent]) -> 
 ///     free_string: mcp_plugin_api::utils::standard_free_string
 /// }
 /// ```
-pub unsafe extern "C" fn standard_free_string(ptr: *mut u8, capacity: usize) {
-    if !ptr.is_null() && capacity > 0 {
-        // Reconstruct the Vec with the same capacity that was returned
-        let _ = Vec::from_raw_parts(ptr, capacity, capacity);
-        // Vec is dropped here, freeing the memory
+pub unsafe extern "C" fn standard_free_string(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() && len > 0 {
+        let _ = Vec::from_raw_parts(ptr, len, len);
     }
 }
 

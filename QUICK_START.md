@@ -109,6 +109,56 @@ declare_plugin! {
     execute_tool: generated_execute_tool,
     free_string: mcp_plugin_api::utils::standard_free_string,
     list_resources: generated_list_resources,
+    list_resource_templates: generated_list_resource_templates,
+    read_resource: generated_read_resource
+}
+```
+
+`generated_list_resource_templates` is always emitted by `declare_resources!` (empty `resourceTemplates` if you only use static `resources:`).
+
+## Resource URI templates (optional)
+
+For parameterized URIs, add `templates:` and optionally `read_fallback:`. Read order is: exact static URI, then first matching template (`{name}` segments), then fallback.
+
+```rust
+use mcp_plugin_api::*;
+use std::collections::HashMap;
+
+fn read_project_file(
+    uri: &str,
+    vars: &HashMap<String, String>,
+) -> Result<ResourceContents, String> {
+    let path = vars.get("path").ok_or_else(|| "missing path".to_string())?;
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    Ok(vec![ResourceContent::text(
+        uri,
+        text,
+        Some("text/plain".into()),
+    )])
+}
+
+fn read_any_uri(uri: &str) -> Result<ResourceContents, String> {
+    Err(format!("not found: {}", uri))
+}
+
+declare_resources! {
+    resources: [],
+    templates: [
+        ResourceTemplate::builder("file:///project/{path}", read_project_file)
+            .name("project-files")
+            .description("Files under project root")
+            .mime_type("text/plain")
+            .build(),
+    ],
+    read_fallback: read_any_uri
+}
+
+declare_plugin! {
+    list_tools: generated_list_tools,
+    execute_tool: generated_execute_tool,
+    free_string: mcp_plugin_api::utils::standard_free_string,
+    list_resources: generated_list_resources,
+    list_resource_templates: generated_list_resource_templates,
     read_resource: generated_read_resource
 }
 ```
